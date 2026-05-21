@@ -1105,8 +1105,52 @@ public class OpenAPINormalizer {
                 }
             }
 
+            // OAS 3.1 annotated-enum pattern: ALL sub-schemas carry a `const` (no $ref).
+            // Convert to a standard `enum` array so OAS 3.0 generators work unchanged.
+            // Preserve per-value annotations as x-enum-varnames / x-enum-descriptions.
+            boolean allHaveConst = !oneOfSchemas.isEmpty() &&
+                    oneOfSchemas.stream().allMatch(s -> s.getConst() != null && s.get$ref() == null);
+
+            if (allHaveConst) {
+                List<Object> constValues = oneOfSchemas.stream()
+                        .map(Schema::getConst)
+                        .collect(Collectors.toList());
+                schema.setEnum(constValues);
+
+                // Infer a concrete type from the const values when the parent has none
+                if (schema.getType() == null && schema.getTypes() == null && !constValues.isEmpty()) {
+                    Object sample = constValues.get(0);
+                    if (sample instanceof String) {
+                        schema.setType("string");
+                    } else if (sample instanceof Integer || sample instanceof Long) {
+                        schema.setType("integer");
+                    } else if (sample instanceof Number) {
+                        schema.setType("number");
+                    }
+                }
+
+                // Preserve title/description annotations as widely-supported x-enum-* extensions
+                boolean hasAnnotations = oneOfSchemas.stream()
+                        .anyMatch(s -> s.getTitle() != null || s.getDescription() != null);
+                if (hasAnnotations) {
+                    List<String> varNames = oneOfSchemas.stream()
+                            .map(s -> s.getTitle() != null ? s.getTitle() : String.valueOf(s.getConst()))
+                            .collect(Collectors.toList());
+                    List<String> descriptions = oneOfSchemas.stream()
+                            .map(s -> s.getDescription() != null ? s.getDescription() : "")
+                            .collect(Collectors.toList());
+                    if (schema.getExtensions() == null) {
+                        schema.setExtensions(new LinkedHashMap<>());
+                    }
+                    schema.getExtensions().put("x-enum-varnames", varNames);
+                    schema.getExtensions().put("x-enum-descriptions", descriptions);
+                }
+
+                schema.setOneOf(null);
+                return schema;
+            }
+
             if (ModelUtils.isIntegerSchema(schema) || ModelUtils.isNumberSchema(schema) || ModelUtils.isStringSchema(schema)) {
-                // TODO convert oneOf const to enum
                 schema.setOneOf(null);
             }
         }
@@ -1359,6 +1403,14 @@ public class OpenAPINormalizer {
             return new Schema();
         }
 
+        // process const - applies in OAS 3.1 regardless of whether `types` is set.
+        // A standalone `const` (e.g. inside a oneOf sub-schema) has no `types`,
+        // so we must handle it before the early-return below.
+        if (schema.getConst() != null) {
+            schema.setEnum(Arrays.asList(schema.getConst()));
+            schema.setConst(null);
+        }
+
         // return schema if nothing in 3.1 spec types to normalize
         if (schema.getTypes() == null) {
             return schema;
@@ -1368,12 +1420,6 @@ public class OpenAPINormalizer {
         if (schema.getTypes().contains("null")) {
             schema.setNullable(true);
             schema.getTypes().remove("null");
-        }
-
-        // process const
-        if (schema.getConst() != null) {
-            schema.setEnum(Arrays.asList(schema.getConst()));
-            schema.setConst(null);
         }
 
         // only one item (type) left
