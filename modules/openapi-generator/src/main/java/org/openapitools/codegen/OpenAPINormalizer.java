@@ -1151,6 +1151,67 @@ public class OpenAPINormalizer {
             }
 
             if (ModelUtils.isIntegerSchema(schema) || ModelUtils.isNumberSchema(schema) || ModelUtils.isStringSchema(schema)) {
+                Map<Object, String> enumValues = new LinkedHashMap<>();
+                String schemaType = ModelUtils.getType(schema);
+                boolean canSimplifyToEnum = oneOfSchemas.size() >= 2;
+
+                for (Schema oneOfSchema : oneOfSchemas) {
+                    if (oneOfSchema == null) {
+                        canSimplifyToEnum = false;
+                        break;
+                    }
+
+                    Schema subSchema = ModelUtils.getReferencedSchema(openAPI, oneOfSchema);
+
+                    // OpenAPI 3.1 may use const as a single-value enum.
+                    List<Object> subSchemaEnumValues = subSchema.getEnum();
+                    if ((subSchemaEnumValues == null || subSchemaEnumValues.isEmpty()) && subSchema.getConst() == null) {
+                        canSimplifyToEnum = false;
+                        break;
+                    }
+                    if ((subSchemaEnumValues == null || subSchemaEnumValues.isEmpty()) && subSchema.getConst() != null) {
+                        subSchemaEnumValues = Arrays.asList(subSchema.getConst());
+                    }
+
+                    if (subSchema.getTypes() != null && subSchema.getTypes().size() > 1) {
+                        canSimplifyToEnum = false;
+                        break;
+                    }
+
+                    String subSchemaType = ModelUtils.getType(subSchema);
+                    if (subSchemaType != null) {
+                        if (schemaType == null) {
+                            schemaType = subSchemaType;
+                        } else if (!schemaType.equals(subSchemaType)) {
+                            canSimplifyToEnum = false;
+                            break;
+                        }
+                    }
+
+                    if (subSchemaEnumValues.size() == 1) {
+                        String description = subSchema.getTitle() == null ? "" : subSchema.getTitle();
+                        if (subSchema.getDescription() != null) {
+                            if (!description.isEmpty()) {
+                                description += " - ";
+                            }
+                            description += subSchema.getDescription();
+                        }
+                        enumValues.put(subSchemaEnumValues.get(0), description);
+                    } else {
+                        for (Object enumValue : subSchemaEnumValues) {
+                            enumValues.put(enumValue, "");
+                        }
+                    }
+                }
+
+                if (canSimplifyToEnum && !enumValues.isEmpty()) {
+                    if (ModelUtils.getType(schema) == null && schemaType != null) {
+                        schema.setType(schemaType);
+                    }
+
+                    schema.setEnum(new ArrayList<>(enumValues.keySet()));
+                }
+
                 schema.setOneOf(null);
             }
         }
