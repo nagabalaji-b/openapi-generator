@@ -1134,7 +1134,11 @@ public class OpenAPINormalizer {
                         .anyMatch(s -> s.getTitle() != null || s.getDescription() != null);
                 if (hasAnnotations) {
                     List<String> varNames = oneOfSchemas.stream()
-                            .map(s -> s.getTitle() != null ? s.getTitle() : String.valueOf(s.getConst()))
+                            .map(s -> {
+                                if (s.getTitle() != null) return s.getTitle();
+                                String constStr = String.valueOf(s.getConst());
+                                return constStr.isEmpty() ? "Empty" : constStr;
+                            })
                             .collect(Collectors.toList());
                     List<String> descriptions = oneOfSchemas.stream()
                             .map(s -> s.getDescription() != null ? s.getDescription() : "")
