@@ -216,6 +216,82 @@ public class DartDioClientCodegenTest {
     }
 
     @Test
+    public void testQueryParameterNullGuardsFollowRequiredness() throws IOException {
+        File output = Files.createTempDirectory("test").toFile();
+        output.deleteOnExit();
+
+        final CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("dart-dio")
+                .setInputSpec("src/test/resources/3_1/dart-dio/optional_nullable_query_parameter.yaml")
+                .setOutputDir(output.getAbsolutePath().replace("\\", "/"));
+
+        ClientOptInput opts = configurator.toClientOptInput();
+        Generator generator = new DefaultGenerator().opts(opts);
+        List<File> files = generator.generate();
+        files.forEach(File::deleteOnExit);
+
+        Path defaultApi = output.toPath().resolve("lib/src/api/default_api.dart");
+
+        TestUtils.assertFileContains(defaultApi,
+                "int? activityId,",
+                "int? categoryId,",
+                "required int requiredId,",
+                "final _queryParameters = <String, dynamic>{");
+
+        // Optional query parameters use nullable Dart arguments. Null means the
+        // caller omitted the parameter, so the generated request must omit it.
+        TestUtils.assertFileContains(defaultApi,
+                "if (activityId != null)",
+                "r'activity_id': encodeQueryParameter(_serializers, activityId, const FullType(int)),",
+                "if (categoryId != null)",
+                "r'category_id': encodeQueryParameter(_serializers, categoryId, const FullType(int)),");
+
+        // Required query parameters are always emitted. If the schema is
+        // nullable, null is an explicit supplied value rather than omission.
+        TestUtils.assertFileContains(defaultApi,
+                "r'required_id': encodeQueryParameter(_serializers, requiredId, const FullType(int)),",
+                "r'required_nullable_id': encodeQueryParameter(_serializers, requiredNullableId, const FullType(int)),");
+        TestUtils.assertFileNotContains(defaultApi,
+                "if (requiredId != null)",
+                "if (requiredNullableId != null)",
+                "final _queryParameters = <String, dynamic>{\n      r'activity_id': encodeQueryParameter(_serializers, activityId, const FullType(int)),",
+                "final _queryParameters = <String, dynamic>{\n      r'category_id': encodeQueryParameter(_serializers, categoryId, const FullType(int)),");
+    }
+
+    /**
+     * Regression test for dart-dio built_value anyOf serialization.
+     *
+     * The one_of AnyOf implementation stores selected values by the index of
+     * the matching declared schema. Before the fix, generated serializers built
+     * the FullType parameters from anyOf.valueTypes, which only contains the
+     * selected value's type. A value stored at index 1 therefore tried to read
+     * specifiedType.parameters[1] from a one-element parameter list and threw a
+     * RangeError during serialization.
+     */
+    @Test
+    public void testAnyOfSerializationUsesDeclaredTypeIndexes() throws IOException {
+        File output = Files.createTempDirectory("test").toFile();
+        output.deleteOnExit();
+
+        final CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("dart-dio")
+                .setInputSpec("src/test/resources/3_0/dart-dio/built_value_anyof_primitive.yaml")
+                .setOutputDir(output.getAbsolutePath().replace("\\", "/"));
+
+        ClientOptInput opts = configurator.toClientOptInput();
+        Generator generator = new DefaultGenerator().opts(opts);
+        List<File> files = generator.generate();
+        files.forEach(File::deleteOnExit);
+
+        Path fieldValue = output.toPath().resolve("lib/src/model/field_value.dart");
+
+        TestUtils.assertFileContains(fieldValue,
+                "FullType(AnyOf, anyOf.types.map((type) => FullType(type)).toList())");
+        TestUtils.assertFileNotContains(fieldValue,
+                "FullType(AnyOf, anyOf.valueTypes.map((type) => FullType(type)).toList())");
+    }
+
+    @Test
     public void verifyDartDioGeneratorRuns() throws IOException {
         File output = Files.createTempDirectory("test").toFile();
         output.deleteOnExit();
@@ -273,5 +349,49 @@ public class DartDioClientCodegenTest {
             "Webhook should not contain Map-style import (bug #22586 symptom)");
         Assert.assertFalse(apiContent.contains("&#x3D;"),
             "Webhook should not contain HTML entity encoding (bug #22586 symptom)");
+    }
+
+   /**
+     * Regression test for missing BuilderFactory entries on container
+     * types reachable only via {@code additionalProperties}.
+     *
+     * Before the fix, a property like
+     * {@code Map<String, List<Widget>>} (an object schema with
+     * {@code additionalProperties: { type: array, items: ... }}) ended
+     * up in the generated Dart class but no
+     * {@code addBuilderFactory(BuiltList<Widget>, ...)} call was
+     * emitted in {@code serializers.dart}. built_value then failed at
+     * runtime with
+     * {@code Bad state: No builder factory for BuiltList<Widget>}.
+     *
+     * The fix walks every model property's container tree and registers
+     * a factory for each nested layer.
+     */
+    @Test
+    public void testNestedAdditionalPropertiesGetBuilderFactories() throws IOException {
+        File output = Files.createTempDirectory("test").toFile();
+        output.deleteOnExit();
+
+        final CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("dart-dio")
+                .setInputSpec("src/test/resources/3_0/dart-dio/built_value_additional_properties_factory.yaml")
+                .setOutputDir(output.getAbsolutePath().replace("\\", "/"));
+
+        ClientOptInput opts = configurator.toClientOptInput();
+        Generator generator = new DefaultGenerator().opts(opts);
+        List<File> files = generator.generate();
+        files.forEach(File::deleteOnExit);
+
+        Path serializers = output.toPath().resolve("lib/src/serializers.dart");
+
+        // Inner container: List<Widget>.
+        TestUtils.assertFileContains(serializers,
+                "const FullType(BuiltList, [FullType(Widget)]),",
+                "() => ListBuilder<Widget>(),");
+
+        // Outer container: Map<String, List<Widget>>.
+        TestUtils.assertFileContains(serializers,
+                "const FullType(BuiltMap, [FullType(String), FullType(BuiltList, [FullType(Widget)])]),",
+                "() => MapBuilder<String, BuiltList<Widget>>(),");
     }
 }
